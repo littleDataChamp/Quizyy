@@ -70,6 +70,9 @@ export default function HostLobby() {
   };
 
   const updateStatus = async (status: string, extra: any = {}) => {
+    if (status === 'active') {
+      extra.started_at = new Date().toISOString();
+    }
     await supabase.from('game_sessions').update({ status, ...extra }).eq('id', session.id);
     setSession({ ...session, status, ...extra });
     if (status === 'active') {

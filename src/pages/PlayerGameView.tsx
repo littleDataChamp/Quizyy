@@ -10,17 +10,33 @@ export default function PlayerGameView() {
   const [answered, setAnswered] = useState(false);
   const [questionStartTime, setQuestionStartTime] = useState<number>(0);
   const [currentQ, setCurrentQ] = useState<any>(null);
+  const [timeLeft, setTimeLeft] = useState<number>(0);
 
-  // 1. Fetch Session
+  // 1. Fetch Session & Participant
   useEffect(() => {
     if (!pin) return;
+    
+    // Check local storage for participant
+    const savedPartId = localStorage.getItem(`participant_${pin}`);
+    if (savedPartId) {
+      supabase.from('participants').select('*').eq('id', savedPartId).single().then(({ data }) => {
+        if (data) setParticipant(data);
+      });
+    }
+
     const fetchSession = async () => {
       const { data } = await supabase.from('game_sessions').select('*').eq('pin', pin).single();
-      if (data) setSession(data);
+      if (data) {
+        setSession(data);
+        if (data.status === 'active') {
+          setQuestionStartTime(new Date(data.started_at || Date.now()).getTime());
+          loadCurrentQuestion(data.quiz_id, data.current_question_index);
+        }
+      }
     };
     fetchSession();
 
-    const sub = supabase.channel(`public:game_sessions:id=eq.${session?.id}`)
+    const sub = supabase.channel(`public:game_sessions:pin=eq.${pin}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'game_sessions', filter: `pin=eq.${pin}` }, payload => {
         const newSession = payload.new;
         setSession(newSession);
@@ -41,6 +57,28 @@ export default function PlayerGameView() {
     };
   }, [pin, session?.id, session?.current_question_index]);
 
+  // Timer effect
+  useEffect(() => {
+    let timerId: any;
+    if (session?.status === 'active' && currentQ && !answered) {
+      timerId = setInterval(() => {
+        const elapsed = (Date.now() - questionStartTime) / 1000;
+        const remaining = Math.max(0, currentQ.time_limit - elapsed);
+        setTimeLeft(Math.ceil(remaining));
+      }, 1000);
+    }
+    return () => clearInterval(timerId);
+  }, [session?.status, currentQ, questionStartTime, answered]);
+
+  // Check if already answered
+  useEffect(() => {
+    if (participant && currentQ) {
+      supabase.from('answers').select('*').eq('participant_id', participant.id).eq('question_id', currentQ.id).single().then(({ data }) => {
+        if (data) setAnswered(true);
+      });
+    }
+  }, [participant, currentQ]);
+
   const loadCurrentQuestion = async (quizId: string, index: number) => {
     const { data } = await supabase.from('questions').select('*').eq('quiz_id', quizId).order('sort_order', { ascending: true });
     if (data && data[index]) {
@@ -59,19 +97,19 @@ export default function PlayerGameView() {
 
     if (data) {
       setParticipant(data);
+      localStorage.setItem(`participant_${pin}`, data.id);
     } else {
       alert('Error joining');
     }
   };
 
   const submitAnswer = async (index: number) => {
-    if (answered || !participant || !currentQ) return;
+    if (answered || !participant || !currentQ || timeLeft <= 0) return;
     setAnswered(true);
 
     const timeTaken = (Date.now() - questionStartTime) / 1000;
     const timeLimit = currentQ.time_limit;
     
-    // Scoring algo: Base Points * (1 - (Time Taken / Total Time) * 0.5)
     let score = 0;
     if (index === currentQ.correct_option_index) {
       const basePoints = 1000 * (currentQ.points_multiplier || 1);
@@ -79,7 +117,7 @@ export default function PlayerGameView() {
       score = Math.round(basePoints * (1 - Math.min(penalty, 0.5)));
     }
 
-    await supabase.from('answers').insert({
+    const { error } = await supabase.from('answers').insert({
       participant_id: participant.id,
       question_id: currentQ.id,
       selected_option_index: index,
@@ -87,8 +125,9 @@ export default function PlayerGameView() {
       score_earned: score
     });
 
-    // Update participant total score (simplified, could be a DB trigger)
-    await supabase.rpc('increment_score', { row_id: participant.id, amount: score });
+    if (!error) {
+      await supabase.rpc('increment_score', { row_id: participant.id, amount: score });
+    }
   };
 
   if (!session) return <div className="p-8 text-center font-bold">Connecting...</div>;
@@ -123,17 +162,28 @@ export default function PlayerGameView() {
     );
   }
 
-  if (session.status === 'active' && !answered) {
+  if (session.status === 'active' && !answered && currentQ) {
     const colors = ['bg-red-500', 'bg-blue-500', 'bg-yellow-500', 'bg-green-500'];
     return (
-      <div className="min-h-screen grid grid-cols-2 grid-rows-2 gap-2 p-2 bg-gray-100">
-        {[0, 1, 2, 3].map(i => (
-          <button 
-            key={i}
-            onClick={() => submitAnswer(i)}
-            className={`${colors[i]} rounded-lg shadow-md active:scale-95 transition-transform`}
-          />
-        ))}
+      <div className="min-h-screen flex flex-col bg-gray-100">
+        <div className="bg-white p-4 text-center shadow-sm flex flex-col items-center justify-center">
+          <div className="w-16 h-16 rounded-full bg-purple-600 text-white flex items-center justify-center text-2xl font-black mb-2">
+            {timeLeft}
+          </div>
+          <h2 className="text-xl font-bold text-gray-800">{currentQ.question_text}</h2>
+        </div>
+        <div className="flex-1 grid grid-cols-2 grid-rows-2 gap-2 p-2">
+          {[0, 1, 2, 3].map(i => (
+            <button 
+              key={i}
+              onClick={() => submitAnswer(i)}
+              disabled={timeLeft <= 0}
+              className={`${colors[i]} rounded-lg shadow-md active:scale-95 transition-transform flex items-center justify-center p-4 disabled:opacity-50`}
+            >
+              <span className="text-white text-xl font-bold break-words">{currentQ.options[i]}</span>
+            </button>
+          ))}
+        </div>
       </div>
     );
   }
@@ -141,7 +191,8 @@ export default function PlayerGameView() {
   if (session.status === 'active' && answered) {
     return (
       <div className="min-h-screen bg-purple-600 flex flex-col items-center justify-center p-8 text-white text-center">
-        <h1 className="text-3xl font-extrabold mb-4">Waiting for others...</h1>
+        <h1 className="text-3xl font-extrabold mb-4">Answer submitted!</h1>
+        <p className="text-xl">Waiting for others...</p>
       </div>
     );
   }

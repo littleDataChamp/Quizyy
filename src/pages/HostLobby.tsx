@@ -87,7 +87,7 @@ export default function HostLobby() {
   const currentQ = questions[session.current_question_index || 0];
 
   if (session.status === 'lobby') {
-    const joinUrl = `${window.location.origin}${import.meta.env.BASE_URL}play`;
+    const joinUrl = `${window.location.origin}${import.meta.env.BASE_URL}#/play`;
     return (
       <div className="min-h-screen bg-gray-100 flex flex-col">
         <div className="bg-white p-8 shadow-sm text-center flex justify-between items-center">

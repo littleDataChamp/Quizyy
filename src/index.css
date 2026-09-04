@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+@layer utilities {
+  .kahoot-red { background-color: #e21b3c; }
+  .kahoot-blue { background-color: #1368ce; }
+  .kahoot-yellow { background-color: #d89e00; }
+  .kahoot-green { background-color: #26890c; }
+}
